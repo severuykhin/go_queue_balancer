@@ -1,0 +1,14 @@
+version: '3.5'
+services:
+  rabbit:
+    container_name: queue_balancer_rabbit
+    hostname: queue_balancer_rabbit
+    image: rabbitmq:latest
+    volumes:
+      - ./docker/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json
+      - ./docker/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins
+      - ./docker/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf
+      - ./docker/rabbitmq/mnesia:/var/lib/rabbitmq/mnesia # Бэкап очередей и сообщений
+    ports:
+       - 5672:5672
+       - 15672:15672

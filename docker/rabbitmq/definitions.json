@@ -1,0 +1,35 @@
+{
+    "rabbit_version":"3.8.3", 
+    "rabbitmq_version":"3.8.3",
+    "users":[
+        {
+            "name":"guest",
+            "password_hash":"wnBUZL9KLRS437zdPfEOGXt0bRvMzp9EAaO9+RNndnMf93PL",
+            "hashing_algorithm":"rabbit_password_hashing_sha256",
+            "tags":"administrator"
+        },
+        {
+            "name":"root",
+            "password_hash":"xvwQJB5L+5IJO4wVad9l5YUGvPPYDzUBvbNaBX1IBqQII/S+",
+            "hashing_algorithm":"rabbit_password_hashing_sha256",
+            "tags":"administrator"
+        }
+    ],
+    "vhosts":[
+        {"name":"/"}
+    ],
+    "permissions":[
+        {"user":"root","vhost":"/","configure":".","write":".","read":".*"},
+        {"user":"guest","vhost":"/","configure":".*","write":".*","read":".*"}
+    ],
+    "topic_permissions":[],
+    "parameters":[],
+    "global_parameters":[
+        {"name":"cluster_name","value":"rabbit@a4e6a790486f"},
+        {"name":"internal_cluster_id","value":"rabbitmq-cluster-id-U8_ICQiUy-HwArqH3nPWgA"}
+    ],
+    "policies":[],
+    "queues":[],
+    "exchanges":[],
+    "bindings":[]
+}
