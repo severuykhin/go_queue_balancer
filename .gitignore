@@ -20,3 +20,4 @@ tmp
 .helm/values_app.yaml
 
 docker/rabbitmq/mnesia
+docker/nats/data
