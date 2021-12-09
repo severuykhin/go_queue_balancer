@@ -1,4 +1,7 @@
 package constants
 
-const StreamName = "SOME_STREAM"
-const StreamSubjects = "SOME_STREAM.*"
+const MAIN_STREAM_NAME = "BOTS"
+const MAIN_STREAM_SUBJECTS = "BOTS.*"
+
+const ASSISTANT_STREAM_NAME = "BOTS_ASSISTANT"
+const ASSISTANT_STREAM_SUBJECTS = "BOTS.*"

@@ -17,7 +17,7 @@ services:
 
   nats_node_1:
     container_name: nats_node_1
-    image: synadia/jsm:nightly
+    image: nats:2.6.2
     dns_search: example.net
     entrypoint: /nats-server
     command: --name N1 --cluster_name JSC --js --sd /data --cluster nats://0.0.0.0:4245 --routes nats://nats_node_1:4245,nats://nats_node_2:4245,nats://nats_node_3:4245 -p 4222
@@ -30,7 +30,7 @@ services:
 
   nats_node_2:
     container_name: nats_node_2
-    image: synadia/jsm:nightly
+    image: nats:2.6.2
     dns_search: example.net
     entrypoint: /nats-server
     command: --name N2 --cluster_name JSC --js --sd /data --cluster nats://0.0.0.0:4245 --routes nats://nats_node_1:4245,nats://nats_node_2:4245,nats://nats_node_3:4245 -p 4222
@@ -43,7 +43,7 @@ services:
 
   nats_node_3:
     container_name: nats_node_3
-    image: synadia/jsm:nightly
+    image: nats:2.6.2
     dns_search: example.net
     entrypoint: /nats-server
     command: --name N3 --cluster_name JSC --js --sd /data --cluster nats://0.0.0.0:4245 --routes nats://nats_node_1:4245,nats://nats_node_2:4245,nats://nats_node_3:4245 -p 4222

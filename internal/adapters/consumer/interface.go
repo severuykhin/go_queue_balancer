@@ -1,6 +1,10 @@
 package consumer
 
+import (
+	"context"
+)
+
 type Cosumer interface {
-	ConsumeMainStream()
+	Run(ctx context.Context)
 	Close()
 }
