@@ -19,15 +19,16 @@ func main() {
 	nc, _ := nats.Connect(nats.DefaultURL)
 	js, _ := nc.JetStream(nats.PublishAsyncMaxPending(256))
 
-	i := 1
+	var i int16
+	var run bool
 
 	metaData := map[int]map[string]int{}
 
-	run := true
+	run = true
 
-	for run == true {
+	for run {
 
-		groupId := rand.Intn(6-1) + 1
+		groupId := rand.Intn(10-1) + 1
 
 		fmt.Println(groupId)
 
@@ -52,7 +53,7 @@ func main() {
 			}
 		}
 
-		time.Sleep(time.Millisecond * 100)
+		time.Sleep(time.Millisecond * 200)
 		i += 1
 
 		select {
@@ -63,6 +64,6 @@ func main() {
 		}
 	}
 
-	fmt.Printf("%v", metaData)
+	fmt.Printf("%+v", metaData)
 
 }

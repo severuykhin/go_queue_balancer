@@ -1,26 +1,13 @@
 version: '3.5'
 services:
-  # rabbit:
-  #   container_name: queue_balancer_rabbit
-  #   hostname: queue_balancer_rabbit
-  #   image: rabbitmq:latest
-  #   volumes:
-  #     - ./docker/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json
-  #     - ./docker/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins
-  #     - ./docker/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf
-  #     - ./docker/rabbitmq/mnesia:/var/lib/rabbitmq/mnesia # Бэкап очередей и сообщений
-  #   ports:
-  #      - 5672:5672
-  #      - 15672:15672
 
-  # NATS JetStream cluster
-
-  nats_node_1:
-    container_name: nats_node_1
+  # NATS JetStream cluster for bot queues
+  bots_queues_nats_node_1:
+    container_name: bots_queues_nats_node_1
     image: nats:2.6.2
     dns_search: example.net
     entrypoint: /nats-server
-    command: --name N1 --cluster_name JSC --js --sd /data --cluster nats://0.0.0.0:4245 --routes nats://nats_node_1:4245,nats://nats_node_2:4245,nats://nats_node_3:4245 -p 4222
+    command: --name N1 --cluster_name JSC --js --sd /data --cluster nats://0.0.0.0:4245 --routes nats://bots_queues_nats_node_1:4245,nats://bots_queues_nats_node_2:4245,nats://bots_queues_nats_node_3:4245 -p 4222
     networks:
     - nats
     ports:
@@ -28,12 +15,12 @@ services:
     volumes:
     - ./docker/nats/data/n1:/data
 
-  nats_node_2:
-    container_name: nats_node_2
+  bots_queues_nats_node_2:
+    container_name: bots_queues_nats_node_2
     image: nats:2.6.2
     dns_search: example.net
     entrypoint: /nats-server
-    command: --name N2 --cluster_name JSC --js --sd /data --cluster nats://0.0.0.0:4245 --routes nats://nats_node_1:4245,nats://nats_node_2:4245,nats://nats_node_3:4245 -p 4222
+    command: --name N2 --cluster_name JSC --js --sd /data --cluster nats://0.0.0.0:4245 --routes nats://bots_queues_nats_node_1:4245,nats://bots_queues_nats_node_2:4245,nats://bots_queues_nats_node_3:4245 -p 4222
     networks:
     - nats
     ports:
@@ -41,12 +28,12 @@ services:
     volumes:
     - ./docker/nats/data/n2:/data
 
-  nats_node_3:
-    container_name: nats_node_3
+  bots_queues_nats_node_3:
+    container_name: bots_queues_nats_node_3
     image: nats:2.6.2
     dns_search: example.net
     entrypoint: /nats-server
-    command: --name N3 --cluster_name JSC --js --sd /data --cluster nats://0.0.0.0:4245 --routes nats://nats_node_1:4245,nats://nats_node_2:4245,nats://nats_node_3:4245 -p 4222
+    command: --name N3 --cluster_name JSC --js --sd /data --cluster nats://0.0.0.0:4245 --routes nats://bots_queues_nats_node_1:4245,nats://bots_queues_nats_node_2:4245,nats://bots_queues_nats_node_3:4245 -p 4222
     networks:
     - nats
     ports:

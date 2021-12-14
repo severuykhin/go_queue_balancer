@@ -14,8 +14,9 @@ import (
 )
 
 var (
-	logger     = logging.NewLogFmt(os.Stderr, os.Stdout, "queue_balancer")
 	consumerId = os.Getenv("CONSUMER_ID")
+	streamName = os.Getenv("STREAM_NAME")
+	logger     = logging.NewLogFmt(os.Stderr, os.Stdout, "queue_balancer_"+consumerId)
 )
 
 func main() {
@@ -25,7 +26,7 @@ func main() {
 
 	groupStorage := group.NewStorage()
 	limitsStorage := limits.NewStorage()
-	cons := consumer.NewNatsConsumer(consumerId, groupStorage, limitsStorage)
+	cons := consumer.NewNatsConsumer(consumerId, streamName, groupStorage, limitsStorage, logger)
 
 	ctx, cancel := context.WithCancel(context.Background())
 

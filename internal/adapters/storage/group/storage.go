@@ -11,12 +11,25 @@ func NewStorage() *GroupStorage {
 	return &GroupStorage{}
 }
 
-func (gs *GroupStorage) GetByOffset(offsetId int, limit int) []group.Group {
-	g1 := group.Group{GroupId: 1}
-	g2 := group.Group{GroupId: 2}
-	g3 := group.Group{GroupId: 3}
-	g4 := group.Group{GroupId: 4}
-	g5 := group.Group{GroupId: 5}
+func (gs *GroupStorage) GetMany(offsetId int, limit int) []group.Group {
 
-	return []group.Group{g1, g2, g3, g4, g5}
+	max := 10000
+	res := []group.Group{}
+
+	if offsetId >= max {
+		return res
+	}
+
+	if offsetId > 1 {
+		offsetId += 1
+	}
+
+	step := offsetId + limit
+
+	for i := offsetId; i < step; i++ {
+		g := group.Group{GroupId: i}
+		res = append(res, g)
+	}
+
+	return res
 }

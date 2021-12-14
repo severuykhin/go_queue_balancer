@@ -15,7 +15,7 @@ func main() {
 	js, _ := nc.JetStream(nats.PublishAsyncMaxPending(256))
 
 	deleteStreamIfExists(js, constants.MAIN_STREAM_NAME)
-	deleteStreamIfExists(js, constants.ASSISTANT_STREAM_NAME)
+	// deleteStreamIfExists(js, constants.ASSISTANT_STREAM_NAME)
 
 	log.Printf("creating stream %q and subjects %q", constants.MAIN_STREAM_NAME, constants.MAIN_STREAM_SUBJECTS)
 
@@ -32,17 +32,32 @@ func main() {
 	// Replicas - фактор репликации
 	// Duplicates - окно, в котором можно отслеживать повторяющиеся сообщения, выраженное в наносекундах
 
-	streamS, err := js.AddStream(&nats.StreamConfig{
+	mainStream, err := js.AddStream(&nats.StreamConfig{
 		Name:       constants.MAIN_STREAM_NAME,
 		Subjects:   []string{constants.MAIN_STREAM_SUBJECTS},
 		Storage:    nats.FileStorage,
 		Retention:  nats.WorkQueuePolicy,
-		Duplicates: time.Millisecond, // в целом принимете любой time.Duration
+		Duplicates: time.Minute, // в целом принимете любой time.Duration
 	})
 
 	if err != nil {
 		fmt.Println(err)
 	}
+
+	monitorStream, err := js.AddStream(&nats.StreamConfig{
+		Name:       constants.MONITOR_STREAM_NAME,
+		Subjects:   []string{constants.MONITOR_STREAM_SUBJECTS},
+		Storage:    nats.FileStorage,
+		Retention:  nats.WorkQueuePolicy,
+		Duplicates: time.Minute, // в целом принимете любой time.Duration
+	})
+
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	fmt.Printf("%+v", mainStream)
+	fmt.Printf("%+v", monitorStream)
 
 	// streamA, err := js.AddStream(&nats.StreamConfig{
 	// 	Name: constants.ASSISTANT_STREAM_NAME,
@@ -92,7 +107,6 @@ func main() {
 	//		LastSeq:0
 	//		LastTime:0001-01-01 00:00:00 +0000 UTC Consumers:0}
 	//		Cluster:0x14000216040 Mirror:<nil> Sources:[]}
-	fmt.Printf("%+v\n", streamS)
 	// fmt.Printf("%+v\n", streamA)
 }
 
