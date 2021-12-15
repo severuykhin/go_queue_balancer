@@ -23,23 +23,22 @@ func NewLogFmt(errorOutputStream *os.File, infoOutputStream *os.File, app string
 }
 
 func (l *LogFmt) Fatal(code int, module string, message string) {
-	l.Log("fatal", code, module, message)
-	os.Exit(1)
+	l.Log("FATAL", code, module, message, true)
 }
 
 func (l *LogFmt) Error(code int, module string, message string) {
-	l.Log("error", code, module, message)
+	l.Log("ERROR", code, module, message, false)
 }
 
 func (l *LogFmt) Info(code int, module string, message string) {
-	l.Log("info", code, module, message)
+	l.Log("INFO", code, module, message, false)
 }
 
 func (l *LogFmt) Debug(code int, module string, message string) {
-	l.Log("debug", code, module, message)
+	l.Log("DEBUG", code, module, message, false)
 }
 
-func (l *LogFmt) Log(level string, code int, module string, message string) {
+func (l *LogFmt) Log(level string, code int, module string, message string, fatal bool) {
 
 	go func() {
 		dateTime := time.Now().Format(time.RFC3339)
@@ -67,6 +66,10 @@ func (l *LogFmt) Log(level string, code int, module string, message string) {
 			io.WriteString(l.ErrorOutputStream, msg)
 		} else {
 			io.WriteString(l.InfoOutputStream, msg)
+		}
+
+		if fatal {
+			os.Exit(1)
 		}
 	}()
 }

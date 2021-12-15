@@ -1,102 +1,43 @@
 package main
 
 import (
-	"encoding/json"
+	"context"
+	"fmt"
 	"os"
-	"queue_balancer/internal/constants"
-	"queue_balancer/internal/types"
+	"os/signal"
+	"queue_balancer/internal/adapters/consumer"
+	"queue_balancer/internal/adapters/storage/group"
+	"queue_balancer/internal/adapters/storage/limits"
 	"queue_balancer/pkg/logging"
-	"queue_balancer/pkg/queue_service"
-
-	"github.com/streadway/amqp"
+	"syscall"
+	"time"
 )
 
 var (
-	logger = logging.NewLogFmt(os.Stderr, os.Stdout, "queue_balancer")
+	consumerId = os.Getenv("CONSUMER_ID")
+	streamName = os.Getenv("STREAM_NAME")
+	logger     = logging.NewLogFmt(os.Stderr, os.Stdout, "queue_balancer_"+consumerId)
 )
 
 func main() {
-	conn, err := amqp.Dial("amqp://guest:guest@localhost:5672/")
 
-	if err != nil {
-		logger.Fatal(123, "app", err.Error())
-	}
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 
-	defer conn.Close()
+	groupStorage := group.NewStorage()
+	limitsStorage := limits.NewStorage()
+	cons := consumer.NewNatsConsumer(consumerId, streamName, groupStorage, limitsStorage, logger)
 
-	qs := queue_service.New(conn)
+	ctx, cancel := context.WithCancel(context.Background())
 
-	qs.Init()
+	go cons.Run(ctx)
 
-	go func() {
-		listenControlQueue(conn, qs)
-	}()
+	<-signals
 
-	forever := make(chan bool)
+	cancel()
+	cons.Close()
 
-	<-forever
+	time.Sleep(time.Second * 5)
 
-}
-
-func listenControlQueue(conn *amqp.Connection, qs *queue_service.QueueService) {
-
-	channelControlQueue, err := conn.Channel()
-
-	if err != nil {
-		logger.Fatal(123, "app", err.Error())
-	}
-
-	channelControlQueue.QueueDeclare(
-		"control_queue", // queue name
-		true,            // durable
-		false,           // auto delete
-		false,           // exclusive
-		false,           // no wait
-		nil,             // arguments
-	)
-
-	messages, err := channelControlQueue.Consume(
-		"control_queue", // queue name
-		"",              // consumer
-		false,           // auto-ack
-		false,           // exclusive
-		false,           // no local
-		false,           // no wait
-		nil,             // arguments
-	)
-
-	if err != nil {
-		logger.Fatal(123, "app", err.Error())
-	}
-
-	logger.Info(123, "control_queue", "Start to listen control queue")
-
-	forever := make(chan bool)
-
-	go func() {
-		for message := range messages {
-
-			if message.Headers["type"] == nil {
-				// TODO some stuff
-				continue
-			}
-
-			switch messageType := message.Headers["type"]; messageType {
-
-			case constants.DECALRE_QUEUE:
-				var decalreQueueTask types.CreateQueueTask
-				_ = json.Unmarshal(message.Body, &decalreQueueTask)
-
-			case constants.SLOW_DOWN_QUEUE:
-				var slowDownQueueTask types.SlowDownQueue
-				_ = json.Unmarshal(message.Body, &slowDownQueueTask)
-				qs.SlowDownQueue(slowDownQueueTask.GroupId, slowDownQueueTask.Ratio)
-			}
-
-			message.Ack(false)
-		}
-	}()
-
-	<-forever
-
+	fmt.Println("Shutdown")
 }
