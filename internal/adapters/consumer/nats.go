@@ -20,23 +20,25 @@ type GroupConsumerData struct {
 }
 
 type NatsConsumer struct {
-	id                  string
-	natsConnection      *nats.Conn
-	streamName          string
-	monitorConsumerName string
-	natsJetStream       nats.JetStreamContext
-	groupStorage        group.Storage
-	limitsStorage       limits.Storage
-	logger              logging.Logger
-	groupConsumersData  map[int]GroupConsumerData
-	mutex               sync.Mutex
+	// Конфигурируемые поля
+	id                string
+	monitorStreamName string
+	groupStorage      group.Storage
+	limitsStorage     limits.Storage
+	logger            logging.Logger
+
+	// Внутренние поля
+	natsConnection     *nats.Conn
+	natsJetStream      nats.JetStreamContext
+	groupConsumersData map[int]GroupConsumerData
+	mutex              sync.Mutex
 }
 
 // todo может стоит использовать rw mutex
 
 func NewNatsConsumer(
 	id string,
-	streamName string,
+	monitorStreamName string,
 	groupStorage group.Storage,
 	limitsStorage limits.Storage,
 	logger logging.Logger,
@@ -54,29 +56,28 @@ func NewNatsConsumer(
 	}
 
 	return &NatsConsumer{
-		id:                  id,
-		natsConnection:      nc,
-		natsJetStream:       js,
-		streamName:          streamName,
-		monitorConsumerName: "monitor",
-		groupStorage:        groupStorage,
-		logger:              logger,
-		groupConsumersData:  map[int]GroupConsumerData{},
+		id:                 id,
+		natsConnection:     nc,
+		natsJetStream:      js,
+		monitorStreamName:  monitorStreamName,
+		groupStorage:       groupStorage,
+		logger:             logger,
+		groupConsumersData: map[int]GroupConsumerData{},
 	}
 }
 
 func (nc *NatsConsumer) Run(ctx context.Context) {
-	go nc.reconnectGroups()
+	go nc.initGroupsSubscribers()
 	// go nc.runMonitorSubscriber()
 }
 
 func (nc *NatsConsumer) runMonitorSubscriber() {
 
-	monitorSubscriberSubject := nc.streamName + ".*"
-	monitorSubscriberQueueGroup := nc.streamName + "_" + nc.monitorConsumerName
+	monitorSubscriberSubject := nc.monitorStreamName + ".*"
+	monitorSubscriberQueueGroup := nc.monitorStreamName + "_consumer"
 
 	sub, err := nc.natsJetStream.QueueSubscribe(monitorSubscriberSubject, monitorSubscriberQueueGroup, func(msg *nats.Msg) {
-		fmt.Println("MONITOR: ", string(msg.Data))
+		fmt.Printf("MONITOR: GroupId:%s UserId:%s Data:%s \n", msg.Subject, msg.Header.Get("UserId"), string(msg.Data))
 	}, nats.MaxAckPending(-1))
 
 	if err != nil {
@@ -95,7 +96,7 @@ func (nc *NatsConsumer) runMonitorSubscriber() {
 
 }
 
-func (nc *NatsConsumer) CreateGroupConsumer(group groupDomain.Group) {
+func (nc *NatsConsumer) createGroupConsumer(group groupDomain.Group) {
 
 	stopChannel := make(chan int, 1)
 	ratelimitChannel := make(chan int, 1)
@@ -176,30 +177,52 @@ func (nc *NatsConsumer) Close() {
 }
 
 // Запустить процесс переподключения с очередям всех сообществ
-func (nc *NatsConsumer) reconnectGroups() {
+func (nc *NatsConsumer) initGroupsSubscribers() {
 
-	offsetId := 1
-	limit := 10000
+	streams := nc.natsJetStream.StreamsInfo()
 
-	for {
+	var c int16
 
-		groups := nc.groupStorage.GetMany(offsetId, limit)
-
-		groupsReceivedCount := len(groups)
-
-		if groupsReceivedCount == 0 {
-			nc.logger.Debug(1103, "nats_consumer", "finished groups initialization")
-			break
+	for s := range streams {
+		c++
+		if s != nil {
+			fmt.Printf("#%d | %s | leader: %s\n", c, s.Config.Name, s.Cluster.Leader)
 		}
-
-		for _, group := range groups {
-			fmt.Println(group)
-			go nc.CreateGroupConsumer(group)
-		}
-
-		offsetId = groups[groupsReceivedCount-1].GroupId
-
-		time.Sleep(time.Millisecond * 1000)
+		time.Sleep(time.Millisecond * 10)
 	}
+
+	// streamNames := nc.natsJetStream.StreamNames()
+
+	// var c int16
+
+	// for name := range streamNames {
+	// 	c++
+	// 	fmt.Printf("#%d | %s \n", c, name)
+	// 	time.Sleep(time.Millisecond * 10)
+	// }
+
+	// offsetId := 1
+	// limit := 10000
+
+	// for {
+
+	// 	groups := nc.groupStorage.GetMany(offsetId, limit)
+
+	// 	groupsReceivedCount := len(groups)
+
+	// 	if groupsReceivedCount == 0 {
+	// 		nc.logger.Debug(1103, "nats_consumer", "finished groups initialization")
+	// 		break
+	// 	}
+
+	// 	for _, group := range groups {
+	// 		fmt.Println(group)
+	// 		go nc.createGroupConsumer(group)
+	// 	}
+
+	// 	offsetId = groups[groupsReceivedCount-1].GroupId
+
+	// 	time.Sleep(time.Millisecond * 1000)
+	// }
 
 }

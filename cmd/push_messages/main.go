@@ -28,16 +28,33 @@ func main() {
 
 	for run {
 
-		groupId := rand.Intn(10-1) + 1
+		groupId := rand.Intn(1000-1) + 1
+		streamName := fmt.Sprintf("BOST_GROUP_%d", groupId)
+		streamSubject := streamName + ".*"
+		streamSubjects := []string{streamSubject}
 
-		fmt.Println(groupId)
+		err := assertStream(js, streamName, streamSubjects)
 
-		msg := fmt.Sprintf("group_id:%d hello %d", groupId, i)
-		subj := fmt.Sprintf("BOTS.group_%d", groupId)
+		if err != nil {
+			fmt.Println(err)
+			continue
+		}
 
-		pubRes, err := js.Publish(subj, []byte(msg))
+		msgId := fmt.Sprintf("%d", i)
+		data := fmt.Sprintf("hello %d", i)
 
-		fmt.Println(msg)
+		headers := map[string][]string{}
+		headers["UserId"] = []string{"3"}
+
+		msg := nats.Msg{
+			Subject: streamSubject,
+			Header:  headers,
+			Data:    []byte(data),
+		}
+
+		pubRes, err := js.PublishMsg(&msg, nats.MsgId(msgId))
+
+		fmt.Printf("%+v\n", msg)
 
 		if err != nil {
 			fmt.Println(err)
@@ -53,7 +70,7 @@ func main() {
 			}
 		}
 
-		time.Sleep(time.Millisecond * 200)
+		time.Sleep(time.Millisecond * 10)
 		i += 1
 
 		select {
@@ -65,5 +82,27 @@ func main() {
 	}
 
 	fmt.Printf("%+v", metaData)
+
+}
+
+func assertStream(js nats.JetStreamContext, streamName string, streamSubjects []string) error {
+
+	stream, err := js.StreamInfo(streamName)
+
+	if err != nil && stream == nil {
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:       streamName,
+			Subjects:   streamSubjects,
+			Storage:    nats.FileStorage,
+			Retention:  nats.WorkQueuePolicy,
+			Duplicates: time.Minute, // в целом принимете любой time.Duration
+		})
+
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 
 }

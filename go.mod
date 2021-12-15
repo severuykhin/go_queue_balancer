@@ -8,9 +8,11 @@ require (
 )
 
 require (
+	github.com/dustin/go-humanize v1.0.0 // indirect
 	github.com/golang/protobuf v1.5.2 // indirect
 	github.com/klauspost/compress v1.13.6 // indirect
 	github.com/minio/highwayhash v1.0.2 // indirect
+	github.com/nats-io/jsm.go v0.0.27 // indirect
 	github.com/nats-io/jwt/v2 v2.2.0 // indirect
 	github.com/nats-io/nats-server/v2 v2.6.6 // indirect
 	github.com/nats-io/nkeys v0.3.0 // indirect
