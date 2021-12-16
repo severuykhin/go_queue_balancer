@@ -8,28 +8,43 @@ import (
 	"queue_balancer/internal/adapters/storage/limits"
 	groupDomain "queue_balancer/internal/domain/group"
 	"queue_balancer/pkg/logging"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go"
 )
 
-type GroupConsumerData struct {
+const (
+	/*
+		Параметр для инициализирующего подключения подписчиков
+		Сколько запросов в секунду можно сделать
+	*/
+	initialSubscribersConnectionPerSecond int = 4096
+
+	/*
+		Параметр для инициализирующего подключения подписчиков
+		На сколько притормозить выполнение очередной горутины для подключения
+	*/
+	initialSubscribersConnectionRateLimit time.Duration = time.Second / time.Duration(initialSubscribersConnectionPerSecond)
+)
+
+type GroupSubscriberData struct {
 	stopChannel      *chan int
 	ratelimitChannel *chan int
 }
 
 type NatsConsumer struct {
-	id                  string
-	natsConnection      *nats.Conn
-	streamName          string
-	monitorConsumerName string
-	natsJetStream       nats.JetStreamContext
-	groupStorage        group.Storage
-	limitsStorage       limits.Storage
-	logger              logging.Logger
-	groupConsumersData  map[int]GroupConsumerData
-	mutex               sync.Mutex
+	id                 string
+	natsConnection     *nats.Conn
+	streamName         string
+	monitorStreamName  string
+	natsJetStream      nats.JetStreamContext
+	groupStorage       group.Storage
+	limitsStorage      limits.Storage
+	logger             logging.Logger
+	groupConsumersData map[int]GroupSubscriberData
+	mutex              sync.Mutex
 }
 
 // todo может стоит использовать rw mutex
@@ -37,10 +52,12 @@ type NatsConsumer struct {
 func NewNatsConsumer(
 	id string,
 	streamName string,
+	monitorStreamName string,
 	groupStorage group.Storage,
 	limitsStorage limits.Storage,
 	logger logging.Logger,
 ) *NatsConsumer {
+
 	nc, err := nats.Connect(nats.DefaultURL)
 
 	if err != nil {
@@ -54,29 +71,71 @@ func NewNatsConsumer(
 	}
 
 	return &NatsConsumer{
-		id:                  id,
-		natsConnection:      nc,
-		natsJetStream:       js,
-		streamName:          streamName,
-		monitorConsumerName: "monitor",
-		groupStorage:        groupStorage,
-		logger:              logger,
-		groupConsumersData:  map[int]GroupConsumerData{},
+		id:                 id,
+		natsConnection:     nc,
+		natsJetStream:      js,
+		streamName:         streamName,
+		monitorStreamName:  monitorStreamName,
+		groupStorage:       groupStorage,
+		logger:             logger,
+		groupConsumersData: map[int]GroupSubscriberData{},
 	}
 }
 
 func (nc *NatsConsumer) Run(ctx context.Context) {
 	go nc.reconnectGroups()
-	// go nc.runMonitorSubscriber()
+	go nc.runMonitorSubscriber()
 }
 
 func (nc *NatsConsumer) runMonitorSubscriber() {
 
-	monitorSubscriberSubject := nc.streamName + ".*"
-	monitorSubscriberQueueGroup := nc.streamName + "_" + nc.monitorConsumerName
+	monitorSubscriberSubject := nc.monitorStreamName + ".*"
+	monitorSubscriberQueueGroup := nc.monitorStreamName + "_monitor"
 
 	sub, err := nc.natsJetStream.QueueSubscribe(monitorSubscriberSubject, monitorSubscriberQueueGroup, func(msg *nats.Msg) {
-		fmt.Println("MONITOR: ", string(msg.Data))
+
+		groupIdStr := msg.Header.Get("GroupId")
+
+		if groupIdStr == "" {
+			errMsg := fmt.Sprintf("nats monitor consumer - no GroupId header in message %+v", msg)
+			nc.logger.Error(6203, "nats_consumer", errMsg)
+			msg.Ack()
+			return
+		}
+
+		groupId, err := strconv.Atoi(groupIdStr)
+
+		if err != nil {
+			errMsg := fmt.Sprintf("nats monitor consumer: GroupId header has invalid value: %s", groupIdStr)
+			nc.logger.Error(6203, "nats_consumer", errMsg)
+			msg.Ack()
+			return
+		}
+
+		nc.mutex.Lock()
+		if _, ok := nc.groupConsumersData[groupId]; ok {
+			// group already has a subscriber
+			nc.mutex.Unlock()
+			msg.Ack()
+			return
+		}
+		nc.mutex.Unlock()
+
+		group, err := nc.groupStorage.GetOne(groupId)
+
+		if err != nil {
+			errMsg := fmt.Sprintf("nats monitor consumer: error while fetching group data - %s", err.Error())
+			nc.logger.Error(6203, "nats_consumer", errMsg)
+			msg.Ack() // nack maybe?? if the database is unavailable
+			return
+		}
+
+		fmt.Printf("NEW SUBSCRIBER FOR GROUP %d \n", groupId)
+
+		go nc.runGroupSubscriber(group)
+
+		msg.Ack()
+
 	}, nats.MaxAckPending(-1))
 
 	if err != nil {
@@ -95,13 +154,17 @@ func (nc *NatsConsumer) runMonitorSubscriber() {
 
 }
 
-func (nc *NatsConsumer) CreateGroupConsumer(group groupDomain.Group) {
+func (nc *NatsConsumer) resolveGroupSubscriberFromMonitor() {
+
+}
+
+func (nc *NatsConsumer) runGroupSubscriber(group *groupDomain.Group) {
 
 	stopChannel := make(chan int, 1)
 	ratelimitChannel := make(chan int, 1)
 
 	nc.mutex.Lock()
-	nc.groupConsumersData[group.GroupId] = GroupConsumerData{
+	nc.groupConsumersData[group.GroupId] = GroupSubscriberData{
 		stopChannel:      &stopChannel,
 		ratelimitChannel: &ratelimitChannel,
 	}
@@ -113,14 +176,11 @@ func (nc *NatsConsumer) CreateGroupConsumer(group groupDomain.Group) {
 			fmt.Println("SOME deffer stuff - cleanup cache")
 		}()
 
-		subject := fmt.Sprintf("BOTS.group_%d", group.GroupId)
+		subject := fmt.Sprintf("%s.group_%d", nc.streamName, group.GroupId)
 		durableName := fmt.Sprintf("group_%d", group.GroupId)
 
-		fmt.Println(subject)
-		fmt.Println(durableName)
-
-		rateLimit := 10                // msg per second
-		pullTimeout := 100 / rateLimit // ms
+		rateLimit := 10                 // msg per second
+		pullTimeout := 1000 / rateLimit // ms
 
 		sub, err := nc.natsJetStream.PullSubscribe(subject, durableName)
 
@@ -138,7 +198,12 @@ func (nc *NatsConsumer) CreateGroupConsumer(group groupDomain.Group) {
 			msgs, err := sub.Fetch(1)
 
 			if err != nil {
-				fmt.Println(err)
+				switch err {
+				case nats.ErrTimeout:
+					// Do nothing
+				default:
+					nc.logger.Error(6202, "nats_consumer", err.Error())
+				}
 			}
 
 			for _, msg := range msgs {
@@ -175,31 +240,35 @@ func (nc *NatsConsumer) Close() {
 
 }
 
-// Запустить процесс переподключения с очередям всех сообществ
+// Запустить процесс переподключения к консьюмерам сообществ
 func (nc *NatsConsumer) reconnectGroups() {
 
 	offsetId := 1
-	limit := 10000
 
 	for {
 
-		groups := nc.groupStorage.GetMany(offsetId, limit)
+		groups, err := nc.groupStorage.GetMany(offsetId, initialSubscribersConnectionPerSecond)
+
+		if err != nil {
+			log.Fatal(err)
+		}
 
 		groupsReceivedCount := len(groups)
 
 		if groupsReceivedCount == 0 {
-			nc.logger.Debug(1103, "nats_consumer", "finished groups initialization")
 			break
 		}
 
 		for _, group := range groups {
-			fmt.Println(group)
-			go nc.CreateGroupConsumer(group)
+			go nc.runGroupSubscriber(group)
+			time.Sleep(initialSubscribersConnectionRateLimit)
 		}
 
 		offsetId = groups[groupsReceivedCount-1].GroupId
 
-		time.Sleep(time.Millisecond * 1000)
+		time.Sleep(time.Second)
 	}
+
+	nc.logger.Debug(1103, "nats_consumer", "finished groups initialization")
 
 }

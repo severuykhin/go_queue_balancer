@@ -5,5 +5,6 @@ import (
 )
 
 type Storage interface {
-	GetMany(offsetId int, limit int) []group.Group
+	GetMany(offsetId int, limit int) ([]*group.Group, error)
+	GetOne(groupId int) (*group.Group, error)
 }

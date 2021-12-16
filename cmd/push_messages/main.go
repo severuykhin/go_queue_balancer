@@ -5,6 +5,7 @@ import (
 	"math/rand"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -28,22 +29,45 @@ func main() {
 
 	for run {
 
-		groupId := rand.Intn(10-1) + 1
+		groupId := rand.Intn(10000-1) + 1
 
 		fmt.Println(groupId)
 
-		msg := fmt.Sprintf("group_id:%d hello %d", groupId, i)
+		data := fmt.Sprintf("group_id:%d hello %d", groupId, i)
 		subj := fmt.Sprintf("BOTS.group_%d", groupId)
+		subj2 := fmt.Sprintf("BOTS_MONITOR.group_%d", groupId)
 
-		pubRes, err := js.Publish(subj, []byte(msg))
+		headers := map[string][]string{}
 
-		fmt.Println(msg)
+		headers["GroupId"] = []string{strconv.Itoa(groupId)}
+
+		msg1 := nats.Msg{
+			Subject: subj,
+			Data:    []byte(data),
+			Header:  headers,
+		}
+
+		msg2 := nats.Msg{
+			Subject: subj2,
+			Data:    []byte(data),
+			Header:  headers,
+		}
+
+		pubRes, err := js.PublishMsg(&msg1)
+		pubRes2, err2 := js.PublishMsg(&msg2)
+
+		fmt.Println(data)
 
 		if err != nil {
 			fmt.Println(err)
 		}
 
+		if err2 != nil {
+			fmt.Println(err2)
+		}
+
 		fmt.Printf("res: %+v\n", pubRes)
+		fmt.Printf("res: %+v\n", pubRes2)
 
 		if val, ok := metaData[groupId]; ok {
 			val["published"] += 1

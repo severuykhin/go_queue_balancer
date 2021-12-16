@@ -1,3 +1,10 @@
+### Запуск консьюмера
+Чтобы запустить консьюмера необходимо выполнить команду  
+```
+CONSUMER_ID=1 STREAM_NAME=BOTS MONITOR_STREAM_NAME=BOTS_MONITOR go run cmd/main/main.go
+
+```
+
 ### Типы сообщений
 
 Тип сообщения приходит в заголовке `type`  
