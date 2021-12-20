@@ -27,9 +27,12 @@ func main() {
 
 	run = true
 
+	const dur = time.Microsecond * time.Duration(333)
+
 	for run {
 
 		groupId := rand.Intn(10000-1) + 1
+		// groupId := 55
 
 		fmt.Println(groupId)
 
@@ -77,7 +80,9 @@ func main() {
 			}
 		}
 
-		time.Sleep(time.Millisecond * 200)
+		// dur := time.Microsecond * time.Duration(333)
+
+		time.Sleep(dur)
 		i += 1
 
 		select {

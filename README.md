@@ -1,7 +1,7 @@
 ### Запуск консьюмера
 Чтобы запустить консьюмера необходимо выполнить команду  
 ```
-CONSUMER_ID=1 STREAM_NAME=BOTS MONITOR_STREAM_NAME=BOTS_MONITOR go run cmd/main/main.go
+CONSUMER_ID=1 STREAM_NAME=BOTS \MONITOR_STREAM_NAME=BOTS_MONITOR REDIS_ACCOUNTS_LIMITS_DB=1 REDIS_HOST=localhost REDIS_PASSWORD=simple go run cmd/main/main.go
 
 ```
 

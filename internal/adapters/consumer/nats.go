@@ -31,16 +31,26 @@ const (
 	/*
 		На сколько притормозить получение очередного сообщения при ошибке доступа к хранилище лимитов
 	*/
-	timeoutOnStorageAccessError time.Duration = time.Second * time.Duration(60)
+	timeoutOnStorageAccessError time.Duration = time.Second * time.Duration(10)
 
 	/*
 		На сколько притормозить получение очередного сообщения при окончании дневного лимита
 	*/
-	timeoutOnAccountLimitExceded time.Duration = time.Second * time.Duration(120)
+	timeoutOnAccountLimitExceded time.Duration = time.Second * time.Duration(10)
+
+	/*
+		Таймаут ожидания активности консьюмера сообщества
+	*/
+	timeoutWaitingForActivity time.Duration = time.Second * time.Duration(10)
+
+	/*
+		Таймаут получения нового сообщения по умолчанию
+	*/
+	defaultPullTimeout time.Duration = time.Millisecond * time.Duration(5)
 )
 
 type GroupSubscriberData struct {
-	stopChannel      *chan int
+	stopChannel      *chan bool
 	ratelimitChannel *chan int
 }
 
@@ -95,10 +105,10 @@ func NewNatsConsumer(
 
 func (nc *NatsConsumer) Run(ctx context.Context) {
 	go nc.reconnectGroups()
-	go nc.runMonitorSubscriber()
+	go nc.runMonitorSubscriber(ctx)
 }
 
-func (nc *NatsConsumer) runMonitorSubscriber() {
+func (nc *NatsConsumer) runMonitorSubscriber(ctx context.Context) {
 
 	monitorSubscriberSubject := nc.monitorStreamName + ".*"
 	monitorSubscriberQueueGroup := nc.monitorStreamName + "_monitor"
@@ -124,8 +134,8 @@ func (nc *NatsConsumer) runMonitorSubscriber() {
 		}
 
 		if nc.groupHasSubscriber(groupId) {
-			errMsg := fmt.Sprintf("monitor consumer - group %d already has subs", groupId)
-			nc.logger.Debug(6203, "nats_consumer", errMsg)
+			// errMsg := fmt.Sprintf("monitor consumer - group %d already has subs", groupId)
+			// nc.logger.Debug(6203, "nats_consumer", errMsg)
 			msg.Ack()
 			return
 		}
@@ -152,20 +162,32 @@ func (nc *NatsConsumer) runMonitorSubscriber() {
 		return
 	}
 
-	if sub != nil {
-		msg := fmt.Sprintf(
-			"created monitor queue_subscriber:%s for subject:%s in node:%s",
-			monitorSubscriberQueueGroup,
-			monitorSubscriberSubject,
-			nc.id)
-		nc.logger.Debug(1102, "nats_consumer", msg)
+	if sub == nil {
+		nc.logger.Fatal(6205, "nats_consumer", "no subscriber defined")
 	}
 
+	msg := fmt.Sprintf(
+		"created monitor queue_subscriber:%s for subject:%s in node:%s",
+		monitorSubscriberQueueGroup,
+		monitorSubscriberSubject,
+		nc.id)
+
+	nc.logger.Debug(6202, "nats_consumer", msg)
+
+	<-ctx.Done()
+
+	nc.logger.Debug(6206, "nats_consumer", "unsubscribing monitor consumer")
+
+	err = sub.Unsubscribe()
+
+	if err != nil {
+		fmt.Println(err)
+	}
 }
 
 func (nc *NatsConsumer) runGroupSubscriber(group *groupDomain.Group) {
 
-	stopChannel := make(chan int, 1)
+	stopChannel := make(chan bool, 1)
 	ratelimitChannel := make(chan int, 1)
 
 	nc.mutex.Lock()
@@ -175,7 +197,7 @@ func (nc *NatsConsumer) runGroupSubscriber(group *groupDomain.Group) {
 	}
 	nc.mutex.Unlock()
 
-	go func(group *groupDomain.Group, stopChannel *chan int, ratelimitChannel *chan int, logger logging.Logger, lStorage limits.Storage) {
+	go func(group *groupDomain.Group, stopChannel *chan bool, ratelimitChannel *chan int, logger logging.Logger, lStorage limits.Storage) {
 
 		defer func() {
 			nc.unsetGroupSubscriber(group.GroupId)
@@ -186,7 +208,7 @@ func (nc *NatsConsumer) runGroupSubscriber(group *groupDomain.Group) {
 		subject := fmt.Sprintf("%s.group_%d", nc.streamName, group.GroupId)
 		durableName := fmt.Sprintf("group_%d", group.GroupId)
 
-		pullTimeout := time.Millisecond * 10
+		pullTimeout := defaultPullTimeout
 
 		sub, err := nc.natsJetStream.PullSubscribe(subject, durableName)
 
@@ -196,6 +218,15 @@ func (nc *NatsConsumer) runGroupSubscriber(group *groupDomain.Group) {
 			fmt.Println("ERR: ", err)
 			return
 		}
+
+		active := false
+
+		go func() {
+			time.Sleep(timeoutWaitingForActivity)
+			if !active {
+				*stopChannel <- true
+			}
+		}()
 
 		for {
 
@@ -213,15 +244,14 @@ func (nc *NatsConsumer) runGroupSubscriber(group *groupDomain.Group) {
 			for _, msg := range msgs {
 
 				currentAccountLimit, err := lStorage.GetAccountOperationsDailyLimit(group.UserId)
-				fmt.Println("NEW MESSAGE: ", currentAccountLimit, err, group.UserId)
+				// fmt.Println("NEW MESSAGE: ", currentAccountLimit, len(msgs))
+
 				/*
 					Ошибка в процессе доступа к счетчику\хранилищу лимитов аккаунта
 					- Хранилище недоступно
 					- Счетчик не найден
 				*/
 				if err != nil {
-					// Можно реализовать периодически опрос хранилища
-					// а можно оставить так - консьюмер сам будет опрашивать
 					pullTimeout = timeoutOnStorageAccessError
 					msg.InProgress()
 				} else if currentAccountLimit == 0 {
@@ -230,18 +260,20 @@ func (nc *NatsConsumer) runGroupSubscriber(group *groupDomain.Group) {
 				} else {
 					fmt.Println(string(msg.Data))
 					msg.Ack()
+					lStorage.DecreaseAccountOperationsDailyLimit(group.UserId, 1)
+					pullTimeout = defaultPullTimeout
 					// TODO - push to another queue
 				}
 
+				active = true
 			}
 
 			select {
 			case <-time.After(pullTimeout):
 				continue
 			case <-*ratelimitChannel:
-				// тут можно менять rateLimit
+				continue
 			case <-*stopChannel:
-				// sub.Drain()
 				return
 			}
 
@@ -252,7 +284,7 @@ func (nc *NatsConsumer) runGroupSubscriber(group *groupDomain.Group) {
 
 func (nc *NatsConsumer) Close() {
 	for _, v := range nc.groupSubscriberData {
-		*v.stopChannel <- 1
+		*v.stopChannel <- true
 	}
 }
 
