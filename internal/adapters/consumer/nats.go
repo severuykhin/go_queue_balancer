@@ -27,6 +27,16 @@ const (
 		На сколько притормозить выполнение очередной горутины для подключения
 	*/
 	initialSubscribersConnectionRateLimit time.Duration = time.Second / time.Duration(initialSubscribersConnectionPerSecond)
+
+	/*
+		На сколько притормозить получение очередного сообщения при ошибке доступа к хранилище лимитов
+	*/
+	timeoutOnStorageAccessError time.Duration = time.Second * time.Duration(60)
+
+	/*
+		На сколько притормозить получение очередного сообщения при окончании дневного лимита
+	*/
+	timeoutOnAccountLimitExceded time.Duration = time.Second * time.Duration(120)
 )
 
 type GroupSubscriberData struct {
@@ -35,16 +45,16 @@ type GroupSubscriberData struct {
 }
 
 type NatsConsumer struct {
-	id                 string
-	natsConnection     *nats.Conn
-	streamName         string
-	monitorStreamName  string
-	natsJetStream      nats.JetStreamContext
-	groupStorage       group.Storage
-	limitsStorage      limits.Storage
-	logger             logging.Logger
-	groupConsumersData map[int]GroupSubscriberData
-	mutex              sync.Mutex
+	id                  string
+	natsConnection      *nats.Conn
+	streamName          string
+	monitorStreamName   string
+	natsJetStream       nats.JetStreamContext
+	groupStorage        group.Storage
+	limitsStorage       limits.Storage
+	logger              logging.Logger
+	groupSubscriberData map[int]GroupSubscriberData
+	mutex               sync.Mutex
 }
 
 // todo может стоит использовать rw mutex
@@ -71,14 +81,15 @@ func NewNatsConsumer(
 	}
 
 	return &NatsConsumer{
-		id:                 id,
-		natsConnection:     nc,
-		natsJetStream:      js,
-		streamName:         streamName,
-		monitorStreamName:  monitorStreamName,
-		groupStorage:       groupStorage,
-		logger:             logger,
-		groupConsumersData: map[int]GroupSubscriberData{},
+		id:                  id,
+		natsConnection:      nc,
+		natsJetStream:       js,
+		streamName:          streamName,
+		monitorStreamName:   monitorStreamName,
+		groupStorage:        groupStorage,
+		logger:              logger,
+		limitsStorage:       limitsStorage,
+		groupSubscriberData: map[int]GroupSubscriberData{},
 	}
 }
 
@@ -112,14 +123,12 @@ func (nc *NatsConsumer) runMonitorSubscriber() {
 			return
 		}
 
-		nc.mutex.Lock()
-		if _, ok := nc.groupConsumersData[groupId]; ok {
-			// group already has a subscriber
-			nc.mutex.Unlock()
+		if nc.groupHasSubscriber(groupId) {
+			errMsg := fmt.Sprintf("monitor consumer - group %d already has subs", groupId)
+			nc.logger.Debug(6203, "nats_consumer", errMsg)
 			msg.Ack()
 			return
 		}
-		nc.mutex.Unlock()
 
 		group, err := nc.groupStorage.GetOne(groupId)
 
@@ -154,37 +163,32 @@ func (nc *NatsConsumer) runMonitorSubscriber() {
 
 }
 
-func (nc *NatsConsumer) resolveGroupSubscriberFromMonitor() {
-
-}
-
 func (nc *NatsConsumer) runGroupSubscriber(group *groupDomain.Group) {
 
 	stopChannel := make(chan int, 1)
 	ratelimitChannel := make(chan int, 1)
 
 	nc.mutex.Lock()
-	nc.groupConsumersData[group.GroupId] = GroupSubscriberData{
+	nc.groupSubscriberData[group.GroupId] = GroupSubscriberData{
 		stopChannel:      &stopChannel,
 		ratelimitChannel: &ratelimitChannel,
 	}
 	nc.mutex.Unlock()
 
-	go func(stopChannel *chan int, ratelimitChannel *chan int) {
+	go func(group *groupDomain.Group, stopChannel *chan int, ratelimitChannel *chan int, logger logging.Logger, lStorage limits.Storage) {
 
 		defer func() {
-			fmt.Println("SOME deffer stuff - cleanup cache")
+			nc.unsetGroupSubscriber(group.GroupId)
+			stopMsg := fmt.Sprintf("STOP GROUP: %d", group.GroupId)
+			logger.Debug(6206, "nats_consumer", stopMsg)
 		}()
 
 		subject := fmt.Sprintf("%s.group_%d", nc.streamName, group.GroupId)
 		durableName := fmt.Sprintf("group_%d", group.GroupId)
 
-		rateLimit := 10                 // msg per second
-		pullTimeout := 1000 / rateLimit // ms
+		pullTimeout := time.Millisecond * 10
 
 		sub, err := nc.natsJetStream.PullSubscribe(subject, durableName)
-
-		count := 0
 
 		fmt.Printf("create subscriber for subject: %s, durable name: %s\n", subject, durableName)
 
@@ -207,37 +211,49 @@ func (nc *NatsConsumer) runGroupSubscriber(group *groupDomain.Group) {
 			}
 
 			for _, msg := range msgs {
-				fmt.Println(string(msg.Data))
-				count += 1
-				msg.Ack()
+
+				currentAccountLimit, err := lStorage.GetAccountOperationsDailyLimit(group.UserId)
+				fmt.Println("NEW MESSAGE: ", currentAccountLimit, err, group.UserId)
+				/*
+					Ошибка в процессе доступа к счетчику\хранилищу лимитов аккаунта
+					- Хранилище недоступно
+					- Счетчик не найден
+				*/
+				if err != nil {
+					// Можно реализовать периодически опрос хранилища
+					// а можно оставить так - консьюмер сам будет опрашивать
+					pullTimeout = timeoutOnStorageAccessError
+					msg.InProgress()
+				} else if currentAccountLimit == 0 {
+					pullTimeout = timeoutOnAccountLimitExceded
+					msg.InProgress()
+				} else {
+					fmt.Println(string(msg.Data))
+					msg.Ack()
+					// TODO - push to another queue
+				}
+
 			}
 
 			select {
-			case <-time.After(time.Millisecond * time.Duration(pullTimeout)):
+			case <-time.After(pullTimeout):
 				continue
 			case <-*ratelimitChannel:
 				// тут можно менять rateLimit
 			case <-*stopChannel:
-				fmt.Println("STOP GROUP")
-				fmt.Printf("group_id: %d  count:%d \n", group.GroupId, count)
 				// sub.Drain()
 				return
 			}
 
 		}
 
-	}(&stopChannel, &ratelimitChannel)
-}
-
-func (nc *NatsConsumer) ConsumeMainStream() {
-
+	}(group, &stopChannel, &ratelimitChannel, nc.logger, nc.limitsStorage)
 }
 
 func (nc *NatsConsumer) Close() {
-	for _, v := range nc.groupConsumersData {
+	for _, v := range nc.groupSubscriberData {
 		*v.stopChannel <- 1
 	}
-
 }
 
 // Запустить процесс переподключения к консьюмерам сообществ
@@ -260,6 +276,13 @@ func (nc *NatsConsumer) reconnectGroups() {
 		}
 
 		for _, group := range groups {
+
+			if nc.groupHasSubscriber(group.GroupId) {
+				errMsg := fmt.Sprintf("groups initialization: group %d already has subs", group.GroupId)
+				nc.logger.Debug(6204, "nats_consumer", errMsg)
+				continue
+			}
+
 			go nc.runGroupSubscriber(group)
 			time.Sleep(initialSubscribersConnectionRateLimit)
 		}
@@ -269,6 +292,23 @@ func (nc *NatsConsumer) reconnectGroups() {
 		time.Sleep(time.Second)
 	}
 
-	nc.logger.Debug(1103, "nats_consumer", "finished groups initialization")
+	nc.logger.Debug(6203, "nats_consumer", "finished groups initialization")
 
+}
+
+// Удалени информации о подписчике сообщества из внутреннего кэша
+func (nc *NatsConsumer) unsetGroupSubscriber(groupId int) {
+	nc.mutex.Lock()
+	delete(nc.groupSubscriberData, groupId)
+	nc.mutex.Unlock()
+}
+
+// Проверка - существует ли подписчик для сообщества во внутреннем кэше
+func (nc *NatsConsumer) groupHasSubscriber(groupId int) bool {
+	nc.mutex.Lock()
+	defer nc.mutex.Unlock()
+	if _, ok := nc.groupSubscriberData[groupId]; ok {
+		return true
+	}
+	return false
 }

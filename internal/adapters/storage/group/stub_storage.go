@@ -34,7 +34,7 @@ func (gs *GroupStubStorage) GetMany(offsetId int, limit int) ([]*group.Group, er
 	step := offsetId + limit
 
 	for i := offsetId; i < step; i++ {
-		g := group.Group{GroupId: i}
+		g := group.Group{GroupId: i, UserId: 1}
 		res = append(res, &g)
 	}
 

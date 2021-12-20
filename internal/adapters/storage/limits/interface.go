@@ -2,11 +2,9 @@ package limits
 
 type Storage interface {
 	// Получить скорость потребления событий сообществом
-	GetGroupRateLimit(groupId int) int
+	GetGroupRateLimit(groupId int) (int, error)
 	// Получить дневной лимит операци аккаунта, которому принадлежит сообщество
-	GetAccountDailyLimit(userId int) int
-	// Получить текущее количество совершенных операций во всех сообществах внутри аккаунта
-	GetCurrentAccountDailyLimit(userId int) int
-	// Обновить дневной лимит операци аккаунта, которому принадлежит сообщество
-	UpdateAccountDailyLimit(userId int) bool
+	GetAccountOperationsDailyLimit(userId int) (int, error)
+	// Уменьшить дневной лимит операци аккаунта, которому принадлежит сообщество
+	DecreaseAccountOperationsDailyLimit(userId int, value int) (int, error)
 }
