@@ -50,8 +50,8 @@ const (
 )
 
 type GroupSubscriberData struct {
-	stopChannel      *chan bool
-	ratelimitChannel *chan int
+	stopChannel chan bool
+	// ratelimitChannel *chan int
 }
 
 type NatsConsumer struct {
@@ -187,22 +187,22 @@ func (nc *NatsConsumer) runMonitorSubscriber(ctx context.Context) {
 
 func (nc *NatsConsumer) runGroupSubscriber(group *groupDomain.Group) {
 
-	stopChannel := make(chan bool, 1)
-	ratelimitChannel := make(chan int, 1)
+	stopChannel := make(chan bool)
+	// ratelimitChannel := make(chan int, 1)
 
 	nc.mutex.Lock()
 	nc.groupSubscriberData[group.GroupId] = GroupSubscriberData{
-		stopChannel:      &stopChannel,
-		ratelimitChannel: &ratelimitChannel,
+		stopChannel: stopChannel,
+		// ratelimitChannel: &ratelimitChannel,
 	}
 	nc.mutex.Unlock()
 
-	go func(group *groupDomain.Group, stopChannel *chan bool, ratelimitChannel *chan int, logger logging.Logger, lStorage limits.Storage) {
+	go func() {
 
 		defer func() {
 			nc.unsetGroupSubscriber(group.GroupId)
 			stopMsg := fmt.Sprintf("STOP GROUP: %d", group.GroupId)
-			logger.Debug(6206, "nats_consumer", stopMsg)
+			nc.logger.Debug(6206, "nats_consumer", stopMsg)
 		}()
 
 		subject := fmt.Sprintf("%s.group_%d", nc.streamName, group.GroupId)
@@ -224,7 +224,7 @@ func (nc *NatsConsumer) runGroupSubscriber(group *groupDomain.Group) {
 		go func() {
 			time.Sleep(timeoutWaitingForActivity)
 			if !active {
-				*stopChannel <- true
+				stopChannel <- true
 			}
 		}()
 
@@ -243,24 +243,28 @@ func (nc *NatsConsumer) runGroupSubscriber(group *groupDomain.Group) {
 
 			for _, msg := range msgs {
 
-				currentAccountLimit, err := lStorage.GetAccountOperationsDailyLimit(group.UserId)
-				// fmt.Println("NEW MESSAGE: ", currentAccountLimit, len(msgs))
+				currentAccountLimit, err := nc.limitsStorage.GetAccountOperationsDailyLimit(group.UserId)
 
-				/*
-					Ошибка в процессе доступа к счетчику\хранилищу лимитов аккаунта
-					- Хранилище недоступно
-					- Счетчик не найден
-				*/
 				if err != nil {
+					/*
+						Ошибка в процессе доступа к счетчику\хранилищу лимитов аккаунта
+						- Хранилище недоступно
+						- Счетчик не найден
+					*/
 					pullTimeout = timeoutOnStorageAccessError
 					msg.InProgress()
+
 				} else if currentAccountLimit == 0 {
+					/*
+						Лимит действий для аккаунта исчерпан
+					*/
 					pullTimeout = timeoutOnAccountLimitExceded
 					msg.InProgress()
+
 				} else {
 					fmt.Println(string(msg.Data))
 					msg.Ack()
-					lStorage.DecreaseAccountOperationsDailyLimit(group.UserId, 1)
+					nc.limitsStorage.DecreaseAccountOperationsDailyLimit(group.UserId, 1)
 					pullTimeout = defaultPullTimeout
 					// TODO - push to another queue
 				}
@@ -271,20 +275,20 @@ func (nc *NatsConsumer) runGroupSubscriber(group *groupDomain.Group) {
 			select {
 			case <-time.After(pullTimeout):
 				continue
-			case <-*ratelimitChannel:
-				continue
-			case <-*stopChannel:
+			// case <-*ratelimitChannel:
+			// 	continue
+			case <-stopChannel:
 				return
 			}
 
 		}
 
-	}(group, &stopChannel, &ratelimitChannel, nc.logger, nc.limitsStorage)
+	}()
 }
 
 func (nc *NatsConsumer) Close() {
-	for _, v := range nc.groupSubscriberData {
-		*v.stopChannel <- true
+	for groupId := range nc.groupSubscriberData {
+		nc.groupSubscriberData[groupId].stopChannel <- true
 	}
 }
 
@@ -338,9 +342,8 @@ func (nc *NatsConsumer) unsetGroupSubscriber(groupId int) {
 // Проверка - существует ли подписчик для сообщества во внутреннем кэше
 func (nc *NatsConsumer) groupHasSubscriber(groupId int) bool {
 	nc.mutex.Lock()
-	defer nc.mutex.Unlock()
-	if _, ok := nc.groupSubscriberData[groupId]; ok {
-		return true
-	}
-	return false
+	_, ok := nc.groupSubscriberData[groupId]
+	nc.mutex.Unlock()
+
+	return ok
 }
