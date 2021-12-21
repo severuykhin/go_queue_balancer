@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"math/rand"
 	"os"
 	"os/signal"
 	"strconv"
@@ -27,12 +26,12 @@ func main() {
 
 	run = true
 
-	const dur = time.Microsecond * time.Duration(333)
+	const dur = time.Millisecond * time.Duration(100)
 
 	for run {
 
-		groupId := rand.Intn(10000-1) + 1
-		// groupId := 55
+		// groupId := rand.Intn(10000-1) + 1
+		groupId := 55
 
 		fmt.Println(groupId)
 
@@ -79,8 +78,6 @@ func main() {
 				"published": 1,
 			}
 		}
-
-		// dur := time.Microsecond * time.Duration(333)
 
 		time.Sleep(dur)
 		i += 1

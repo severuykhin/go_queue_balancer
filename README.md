@@ -5,7 +5,7 @@ CONSUMER_ID=1 \
 STREAM_NAME=BOTS \
 MONITOR_STREAM_NAME=BOTS_MONITOR \
 REDIS_ACCOUNTS_LIMITS_DB=1 \
-REDIS_HOST=localhost:6397 \
+REDIS_HOST=localhost:6379 \
 REDIS_PASSWORD=simple \
 go run cmd/main/main.go
 
@@ -26,9 +26,9 @@ type: declare_queue
 
 ```
 
-1. Проблема 1 - копирование стримов. 3 вида
- - Copy - Судя по документации - это буквально копирование. Nast скопирует данные из одного стрима в другой - это единоразовая операция
- - Mirror - 
+Вопрос - при пендинге все такие есть некая задержка
+
+
 
 1. Проблема 1 со сравнением текущего количества выполненных операций с количеством доступных операций
 Решение:

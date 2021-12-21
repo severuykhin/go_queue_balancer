@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math/rand"
+	"queue_balancer/internal/adapters/publisher"
 	"queue_balancer/internal/adapters/storage/group"
 	"queue_balancer/internal/adapters/storage/limits"
 	groupDomain "queue_balancer/internal/domain/group"
@@ -44,6 +46,11 @@ const (
 	timeoutWaitingForActivity time.Duration = time.Second * time.Duration(10)
 
 	/*
+		Таймаут в случае ошибки публикации сообщения
+	*/
+	timeoutOnPublishError time.Duration = time.Second * time.Duration(5)
+
+	/*
 		Таймаут получения нового сообщения по умолчанию
 	*/
 	defaultPullTimeout time.Duration = time.Millisecond * time.Duration(5)
@@ -55,16 +62,21 @@ type GroupSubscriberData struct {
 }
 
 type NatsConsumer struct {
-	id                  string
-	natsConnection      *nats.Conn
-	streamName          string
-	monitorStreamName   string
-	natsJetStream       nats.JetStreamContext
-	groupStorage        group.Storage
-	limitsStorage       limits.Storage
-	logger              logging.Logger
+	id                string
+	streamName        string
+	monitorStreamName string
+
+	natsJetStream nats.JetStreamContext
+
+	groupStorage  group.Storage
+	limitsStorage limits.Storage
+
+	messagePublisher publisher.Publisher
+
 	groupSubscriberData map[int]GroupSubscriberData
 	mutex               sync.Mutex
+
+	logger logging.Logger
 }
 
 // todo может стоит использовать rw mutex
@@ -73,32 +85,22 @@ func NewNatsConsumer(
 	id string,
 	streamName string,
 	monitorStreamName string,
+	jetStream nats.JetStreamContext,
 	groupStorage group.Storage,
 	limitsStorage limits.Storage,
+	messagePublisher publisher.Publisher,
 	logger logging.Logger,
 ) *NatsConsumer {
 
-	nc, err := nats.Connect(nats.DefaultURL)
-
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	js, err := nc.JetStream(nats.PublishAsyncMaxPending(256))
-
-	if err != nil {
-		log.Fatal(err)
-	}
-
 	return &NatsConsumer{
 		id:                  id,
-		natsConnection:      nc,
-		natsJetStream:       js,
+		natsJetStream:       jetStream,
 		streamName:          streamName,
 		monitorStreamName:   monitorStreamName,
 		groupStorage:        groupStorage,
 		logger:              logger,
 		limitsStorage:       limitsStorage,
+		messagePublisher:    messagePublisher,
 		groupSubscriberData: map[int]GroupSubscriberData{},
 	}
 }
@@ -151,7 +153,7 @@ func (nc *NatsConsumer) runMonitorSubscriber(ctx context.Context) {
 
 		fmt.Printf("NEW SUBSCRIBER FOR GROUP %d \n", groupId)
 
-		go nc.runGroupSubscriber(group)
+		go nc.runGroupSubscriber(group, "monitor")
 
 		msg.Ack()
 
@@ -185,7 +187,7 @@ func (nc *NatsConsumer) runMonitorSubscriber(ctx context.Context) {
 	}
 }
 
-func (nc *NatsConsumer) runGroupSubscriber(group *groupDomain.Group) {
+func (nc *NatsConsumer) runGroupSubscriber(group *groupDomain.Group, ctx string) {
 
 	stopChannel := make(chan bool)
 	// ratelimitChannel := make(chan int, 1)
@@ -198,6 +200,8 @@ func (nc *NatsConsumer) runGroupSubscriber(group *groupDomain.Group) {
 	nc.mutex.Unlock()
 
 	go func() {
+
+		grID := randomString(12)
 
 		defer func() {
 			nc.unsetGroupSubscriber(group.GroupId)
@@ -246,26 +250,35 @@ func (nc *NatsConsumer) runGroupSubscriber(group *groupDomain.Group) {
 				currentAccountLimit, err := nc.limitsStorage.GetAccountOperationsDailyLimit(group.UserId)
 
 				if err != nil {
+					fmt.Println(err)
 					/*
 						Ошибка в процессе доступа к счетчику\хранилищу лимитов аккаунта
 						- Хранилище недоступно
 						- Счетчик не найден
 					*/
 					pullTimeout = timeoutOnStorageAccessError
-					msg.InProgress()
+					msg.Nak()
 
 				} else if currentAccountLimit == 0 {
 					/*
 						Лимит действий для аккаунта исчерпан
 					*/
+					fmt.Println(grID+" stuck. waiting:", string(msg.Data), len(msgs), ctx)
 					pullTimeout = timeoutOnAccountLimitExceded
-					msg.InProgress()
+					msg.Nak()
 
 				} else {
-					fmt.Println(string(msg.Data))
-					msg.Ack()
-					nc.limitsStorage.DecreaseAccountOperationsDailyLimit(group.UserId, 1)
-					pullTimeout = defaultPullTimeout
+					err := nc.messagePublisher.Publish(group.GroupId, msg.Data, msg.Header)
+
+					if err != nil {
+						msg.Nak()
+						pullTimeout = timeoutOnPublishError
+					} else {
+						msg.Ack()
+						nc.limitsStorage.DecreaseAccountOperationsDailyLimit(group.UserId, 1)
+						pullTimeout = defaultPullTimeout
+					}
+
 					// TODO - push to another queue
 				}
 
@@ -319,7 +332,7 @@ func (nc *NatsConsumer) reconnectGroups() {
 				continue
 			}
 
-			go nc.runGroupSubscriber(group)
+			go nc.runGroupSubscriber(group, "reconnect groups")
 			time.Sleep(initialSubscribersConnectionRateLimit)
 		}
 
@@ -342,8 +355,19 @@ func (nc *NatsConsumer) unsetGroupSubscriber(groupId int) {
 // Проверка - существует ли подписчик для сообщества во внутреннем кэше
 func (nc *NatsConsumer) groupHasSubscriber(groupId int) bool {
 	nc.mutex.Lock()
-	_, ok := nc.groupSubscriberData[groupId]
-	nc.mutex.Unlock()
 
-	return ok
+	defer nc.mutex.Unlock()
+
+	if _, ok := nc.groupSubscriberData[groupId]; ok {
+		return true
+	}
+
+	return false
+}
+
+func randomString(length int) string {
+	rand.Seed(time.Now().UnixNano())
+	b := make([]byte, length)
+	rand.Read(b)
+	return fmt.Sprintf("%x", b)[:length]
 }

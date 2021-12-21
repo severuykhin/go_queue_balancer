@@ -6,12 +6,15 @@ import (
 	"os"
 	"os/signal"
 	"queue_balancer/internal/adapters/consumer"
+	"queue_balancer/internal/adapters/publisher"
 	"queue_balancer/internal/adapters/storage/group"
 	"queue_balancer/internal/adapters/storage/limits"
 	"queue_balancer/pkg/logging"
 	"strconv"
 	"syscall"
 	"time"
+
+	"github.com/nats-io/nats.go"
 )
 
 var (
@@ -58,22 +61,39 @@ func main() {
 		logger.Fatal(6201, "main", "error parsing redisDeliveryReadCaheDb variable. actual value is "+redisDeliveryReadCaheDb)
 	}
 
+	natsConnection, err := nats.Connect(nats.DefaultURL)
+
+	if err != nil {
+		logger.Fatal(6202, "app_run", "cannot connect to nats")
+	}
+
+	jetStream, err := natsConnection.JetStream(nats.PublishAsyncMaxPending(256))
+
+	if err != nil {
+		logger.Fatal(6203, "app_run", "cannot connect to nats jetstream")
+	}
+
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 
 	groupStorage := group.NewStubStorage()
+
 	limitsStorage := limits.NewStorage(limits.StorageConfig{
 		DB:       limitsDbId,
 		Addr:     redisHost,
 		Password: redisPassword,
 	})
 
+	messagePublisher := publisher.NewStubPublisher()
+
 	cons := consumer.NewNatsConsumer(
 		consumerId,
 		streamName,
 		monitorStreamName,
+		jetStream,
 		groupStorage,
 		limitsStorage,
+		messagePublisher,
 		logger,
 	)
 
@@ -86,7 +106,21 @@ func main() {
 	cancel()
 	cons.Close()
 
-	time.Sleep(time.Second * 5)
+	time.Sleep(time.Second * 2)
+
+	printReport(messagePublisher)
 
 	fmt.Println("Shutdown")
+}
+
+func printReport(mp *publisher.StubPublisher) {
+	rep := mp.GetInfo()
+	fmt.Println("=======================")
+	for key := range rep {
+		fmt.Printf("Group: %d | Messages: %d \n", key, rep[key])
+		fmt.Println("-------------------------")
+	}
+
+	fmt.Println("========================")
+
 }
