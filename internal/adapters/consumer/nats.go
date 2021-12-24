@@ -22,7 +22,7 @@ const (
 		Параметр для инициализирующего подключения подписчиков
 		Сколько запросов в секунду можно сделать
 	*/
-	initialSubscribersConnectionPerSecond int = 4096
+	initialSubscribersConnectionPerSecond int = 1024
 
 	/*
 		Параметр для инициализирующего подключения подписчиков
@@ -106,8 +106,35 @@ func NewNatsConsumer(
 }
 
 func (nc *NatsConsumer) Run(ctx context.Context) {
-	go nc.reconnectGroups()
-	go nc.runMonitorSubscriber(ctx)
+
+	// ci, err := nc.natsJetStream.AddConsumer(nc.streamName, &nats.ConsumerConfig{
+	// 	Durable:       "bots_main",
+	// 	FilterSubject: "BOTS.*",
+	// 	AckPolicy:     nats.AckExplicitPolicy,
+	// })
+
+	// if err != nil {
+	// 	fmt.Println("ERR creating consumer: ", err)
+	// }
+
+	// fmt.Println(ci)
+
+	// sub, err := nc.natsJetStream.QueueSubscribe()
+
+	// sub, err := nc.natsJetStream.Subscribe("BOTS.*", func(msg *nats.Msg) {
+
+	// }, nats.Bind("BOTS", "bots_main"))
+
+	sub, err := nc.natsJetStream.PullSubscribe("BOTS.*", "bots_main")
+
+	if err != nil {
+		fmt.Println("ERR creating consumer: ", err)
+	}
+
+	fmt.Println(sub)
+
+	// go nc.reconnectGroups()
+	// go nc.runMonitorSubscriber(ctx)
 }
 
 func (nc *NatsConsumer) runMonitorSubscriber(ctx context.Context) {
@@ -153,7 +180,7 @@ func (nc *NatsConsumer) runMonitorSubscriber(ctx context.Context) {
 
 		fmt.Printf("NEW SUBSCRIBER FOR GROUP %d \n", groupId)
 
-		go nc.runGroupSubscriber(group, "monitor")
+		go nc.runGroupSubscriber(group)
 
 		msg.Ack()
 
@@ -187,121 +214,152 @@ func (nc *NatsConsumer) runMonitorSubscriber(ctx context.Context) {
 	}
 }
 
-func (nc *NatsConsumer) runGroupSubscriber(group *groupDomain.Group, ctx string) {
+func (nc *NatsConsumer) runGroupSubscriber(group *groupDomain.Group) {
 
 	stopChannel := make(chan bool)
-	// ratelimitChannel := make(chan int, 1)
 
 	nc.mutex.Lock()
 	nc.groupSubscriberData[group.GroupId] = GroupSubscriberData{
 		stopChannel: stopChannel,
-		// ratelimitChannel: &ratelimitChannel,
 	}
 	nc.mutex.Unlock()
 
 	go func() {
 
-		grID := randomString(12)
+		subscriberSubject := fmt.Sprintf("BOTS.group_%d", group.GroupId)
+		subscriberQueueGroup := fmt.Sprintf("group_%d", group.GroupId)
 
-		defer func() {
-			nc.unsetGroupSubscriber(group.GroupId)
-			stopMsg := fmt.Sprintf("STOP GROUP: %d", group.GroupId)
-			nc.logger.Debug(6206, "nats_consumer", stopMsg)
-		}()
+		fmt.Println(subscriberQueueGroup, subscriberSubject)
 
-		subject := fmt.Sprintf("%s.group_%d", nc.streamName, group.GroupId)
-		durableName := fmt.Sprintf("group_%d", group.GroupId)
+		_, err := nc.natsJetStream.QueueSubscribe(subscriberSubject, subscriberQueueGroup, func(msg *nats.Msg) {
 
-		pullTimeout := defaultPullTimeout
+			nc.messagePublisher.Publish(group.GroupId, msg.Data, msg.Header)
+			msg.Ack()
 
-		sub, err := nc.natsJetStream.PullSubscribe(subject, durableName)
-
-		fmt.Printf("create subscriber for subject: %s, durable name: %s\n", subject, durableName)
+		}, nats.MaxAckPending(1))
 
 		if err != nil {
-			fmt.Println("ERR: ", err)
+			log.Println("ERR creating subscriber: ", err)
 			return
 		}
 
-		active := false
-
-		go func() {
-			time.Sleep(timeoutWaitingForActivity)
-			if !active {
-				stopChannel <- true
-			}
-		}()
-
-		for {
-
-			msgs, err := sub.Fetch(1)
-
-			if err != nil {
-				switch err {
-				case nats.ErrTimeout:
-					// Do nothing
-				default:
-					nc.logger.Error(6202, "nats_consumer", err.Error())
-				}
-			}
-
-			for _, msg := range msgs {
-
-				currentAccountLimit, err := nc.limitsStorage.GetAccountOperationsDailyLimit(group.UserId)
-
-				if err != nil {
-					fmt.Println(err)
-					/*
-						Ошибка в процессе доступа к счетчику\хранилищу лимитов аккаунта
-						- Хранилище недоступно
-						- Счетчик не найден
-					*/
-					pullTimeout = timeoutOnStorageAccessError
-					msg.Nak()
-
-				} else if currentAccountLimit == 0 {
-					/*
-						Лимит действий для аккаунта исчерпан
-					*/
-					fmt.Println(grID+" stuck. waiting:", string(msg.Data), len(msgs), ctx)
-					pullTimeout = timeoutOnAccountLimitExceded
-					msg.Nak()
-
-				} else {
-					err := nc.messagePublisher.Publish(group.GroupId, msg.Data, msg.Header)
-
-					if err != nil {
-						msg.Nak()
-						pullTimeout = timeoutOnPublishError
-					} else {
-						msg.Ack()
-						nc.limitsStorage.DecreaseAccountOperationsDailyLimit(group.UserId, 1)
-						pullTimeout = defaultPullTimeout
-					}
-
-					// TODO - push to another queue
-				}
-
-				active = true
-			}
-
-			select {
-			case <-time.After(pullTimeout):
-				continue
-			// case <-*ratelimitChannel:
-			// 	continue
-			case <-stopChannel:
-				return
-			}
-
-		}
-
+		fmt.Printf("create subscriber for subject: %s, durable name: %s\n", subscriberSubject, subscriberQueueGroup)
 	}()
+
 }
+
+// func (nc *NatsConsumer) runGroupSubscriber(group *groupDomain.Group, ctx string) {
+
+// 	stopChannel := make(chan bool)
+// 	// ratelimitChannel := make(chan int, 1)
+
+// 	nc.mutex.Lock()
+// 	nc.groupSubscriberData[group.GroupId] = GroupSubscriberData{
+// 		stopChannel: stopChannel,
+// 		// ratelimitChannel: &ratelimitChannel,
+// 	}
+// 	nc.mutex.Unlock()
+
+// 	go func() {
+
+// 		grID := randomString(12)
+
+// 		subject := fmt.Sprintf("%s.group_%d", nc.streamName, group.GroupId)
+// 		durableName := fmt.Sprintf("group_%d", group.GroupId)
+
+// 		pullTimeout := defaultPullTimeout
+
+// 		sub, err := nc.natsJetStream.PullSubscribe(subject, durableName)
+
+// 		fmt.Printf("create subscriber for subject: %s, durable name: %s\n", subject, durableName)
+
+// 		if err != nil {
+// 			fmt.Println("PULL SUBSCRIBE ERR: ", err)
+// 			return
+// 		}
+
+// 		active := false
+
+// 		go func() {
+// 			time.Sleep(timeoutWaitingForActivity)
+// 			if !active {
+// 				close(stopChannel)
+// 			}
+// 		}()
+
+// 		for {
+
+// 			msgs, err := sub.Fetch(1)
+
+// 			if err != nil {
+// 				switch err {
+// 				case nats.ErrTimeout:
+// 					// Do nothing
+// 				default:
+// 					nc.logger.Error(6202, "nats_consumer", err.Error())
+// 				}
+// 			}
+
+// 			for _, msg := range msgs {
+
+// 				currentAccountLimit, err := nc.limitsStorage.GetAccountOperationsDailyLimit(group.UserId)
+
+// 				if err != nil {
+// 					fmt.Println(err)
+// 					/*Oшибка в процессе доступа к счетчику\хранилищу лимитов аккаунта
+// 					- Хранилище недоступно
+// 					- Счетчик не найден
+// 					*/
+// 					pullTimeout = timeoutOnStorageAccessError
+// 					msg.Nak()
+
+// 				} else if currentAccountLimit == 0 {
+// 					/*
+// 						Лимит действий для аккаунта исчерпан
+// 					*/
+// 					fmt.Println(grID+" stuck. waiting:", string(msg.Data), len(msgs), ctx)
+// 					pullTimeout = timeoutOnAccountLimitExceded
+// 					msg.Nak()
+
+// 				} else {
+// 					err := nc.messagePublisher.Publish(group.GroupId, msg.Data, msg.Header)
+
+// 					if err != nil {
+// 						msg.Nak()
+// 						pullTimeout = timeoutOnPublishError
+// 					} else {
+// 						msg.Ack()
+// 						nc.limitsStorage.DecreaseAccountOperationsDailyLimit(group.UserId, 1)
+// 						pullTimeout = defaultPullTimeout
+// 					}
+
+// 					// TODO - push to another queue
+// 				}
+
+// 				active = true
+// 			}
+
+// 			select {
+// 			case <-time.After(pullTimeout):
+// 				continue
+// 			// case <-*ratelimitChannel:
+// 			// 	continue
+// 			case _, ok := <-stopChannel:
+// 				if !ok {
+// 					nc.unsetGroupSubscriber(group.GroupId)
+// 					stopMsg := fmt.Sprintf("STOP GROUP: %d", group.GroupId)
+// 					nc.logger.Debug(6206, "nats_consumer", stopMsg)
+// 				}
+// 				return
+// 			}
+// 		}
+
+// 	}()
+// }
 
 func (nc *NatsConsumer) Close() {
 	for groupId := range nc.groupSubscriberData {
-		nc.groupSubscriberData[groupId].stopChannel <- true
+		close(nc.groupSubscriberData[groupId].stopChannel)
 	}
 }
 
@@ -332,7 +390,7 @@ func (nc *NatsConsumer) reconnectGroups() {
 				continue
 			}
 
-			go nc.runGroupSubscriber(group, "reconnect groups")
+			go nc.runGroupSubscriber(group)
 			time.Sleep(initialSubscribersConnectionRateLimit)
 		}
 
@@ -342,6 +400,11 @@ func (nc *NatsConsumer) reconnectGroups() {
 	}
 
 	nc.logger.Debug(6203, "nats_consumer", "finished groups initialization")
+
+}
+
+// Попробовать объеденить логику проверки и создания кэшируемой структуры
+func (nc *NatsConsumer) resolveGroupSubscriber() {
 
 }
 

@@ -20,7 +20,7 @@ func (gs *GroupStubStorage) GetOne(groupId int) (*group.Group, error) {
 
 func (gs *GroupStubStorage) GetMany(offsetId int, limit int) ([]*group.Group, error) {
 
-	max := 10
+	max := 4000
 	res := []*group.Group{}
 
 	if offsetId >= max {

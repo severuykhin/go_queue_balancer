@@ -114,13 +114,19 @@ func main() {
 }
 
 func printReport(mp *publisher.StubPublisher) {
+	var totalValue int
+
 	rep := mp.GetInfo()
+
 	fmt.Println("=======================")
 	for key := range rep {
+		totalValue += rep[key]
 		fmt.Printf("Group: %d | Messages: %d \n", key, rep[key])
 		fmt.Println("-------------------------")
 	}
 
+	fmt.Println("========================")
+	fmt.Printf("Total value: %d\n", totalValue)
 	fmt.Println("========================")
 
 }

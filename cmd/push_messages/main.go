@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math/rand"
 	"os"
 	"os/signal"
 	"strconv"
@@ -26,12 +27,12 @@ func main() {
 
 	run = true
 
-	const dur = time.Millisecond * time.Duration(100)
+	const dur = time.Millisecond * time.Duration(5)
 
 	for run {
 
-		// groupId := rand.Intn(10000-1) + 1
-		groupId := 55
+		groupId := rand.Intn(100000-1) + 1
+		// groupId := 10
 
 		fmt.Println(groupId)
 
@@ -90,6 +91,22 @@ func main() {
 		}
 	}
 
-	fmt.Printf("%+v", metaData)
+	printReport(metaData)
+
+}
+
+func printReport(data map[int]map[string]int) {
+	var totalValue int
+
+	fmt.Println("=======================")
+	for key := range data {
+		totalValue += data[key]["published"]
+		fmt.Printf("Group: %d | Messages: %d \n", key, data[key]["published"])
+		fmt.Println("-------------------------")
+	}
+
+	fmt.Println("========================")
+	fmt.Printf("Total value: %d\n", totalValue)
+	fmt.Println("========================")
 
 }
